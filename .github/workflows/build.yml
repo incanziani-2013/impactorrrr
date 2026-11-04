@@ -1,0 +1,69 @@
+name: Build IMPACTOR (Windows VST3)
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # necesario solo para publicar el Release en los tags
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # JUCE 8.0.6 lo baja CMake solo (FetchContent). Se cachea para no
+      # descargarlo en cada corrida.
+      - name: Cache JUCE (FetchContent)
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: juce-8.0.6-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configurar (CMake + Visual Studio 2022)
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DIMPACTOR_FETCH_JUCE=ON
+
+      - name: Compilar tests
+        run: cmake --build build --config Release --parallel --target impactor_dsp_test impactor_processor_test
+
+      - name: Test DSP
+        run: ./build/Release/impactor_dsp_test.exe
+        shell: bash
+
+      - name: Test procesador
+        run: ./build/Release/impactor_processor_test.exe
+        shell: bash
+
+      - name: Compilar plugin VST3 (Release)
+        run: cmake --build build --config Release --parallel --target IMPACTOR_VST3
+
+      - name: Empaquetar
+        shell: pwsh
+        run: |
+          $src = "build/IMPACTOR_artefacts/Release/VST3/IMPACTOR.vst3"
+          if (-not (Test-Path $src)) { throw "No se generó $src" }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item $src dist/IMPACTOR.vst3 -Recurse
+          Copy-Item instalar_vst3.bat dist/
+          Compress-Archive -Path dist/* -DestinationPath IMPACTOR-win64-vst3.zip -Force
+
+      - name: Subir artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: IMPACTOR-win64-vst3
+          path: IMPACTOR-win64-vst3.zip
+          if-no-files-found: error
+
+      # Al hacer un tag (ej: git tag v1.0.0 && git push --tags) crea el Release con el zip
+      - name: Publicar Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: IMPACTOR-win64-vst3.zip
